@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+# react.sh - Add an emoji reaction to a PR comment
+
+# Usage:
+# gh react pr 123
+
+# Get PR number
+PR_NUMBER=$1
+
+# Fetch comments
+echo "Fetching comments for PR #$PR_NUMBER..."
+gh pr view "$PR_NUMBER" --comments
+
+echo
+read -p "Enter comment ID to react to: " COMMENT_ID
+echo "Pick a reaction: (+1, -1, laugh, heart, hooray, rocket, eyes)"
+read -p "Reaction: " REACTION
+
+OWNER=$(gh repo view --json owner -q ".owner.login")
+REPO=$(gh repo view --json name -q ".name")
+
+echo "Sending reaction..."
+gh api --method POST /repos/$OWNER/$REPO/issues/comments/$COMMENT_ID/reactions \
+  -f "content=$REACTION" \
+  -H "Accept: application/vnd.github+json"
+
+echo "Done! 👍"

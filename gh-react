@@ -1,28 +1,106 @@
 #!/usr/bin/env bash
 
-# react.sh - Add an emoji reaction to a PR comment
+# Check if PR number is provided
+if [ -z "$1" ]; then
+    echo "Usage: gh react <pr_number>"
+    exit 1
+fi
 
-# Usage:
-# gh react pr 123
-
-# Get PR number
 PR_NUMBER=$1
-
-# Fetch comments
 echo "Fetching comments for PR #$PR_NUMBER..."
-gh pr view "$PR_NUMBER" --comments
+
+OWNER=$(gh repo view --json owner -q ".owner.login")
+REPO=$(gh repo view --json name -q ".name")
+
+# Check if PR exists first
+echo "Checking if PR #$PR_NUMBER exists..."
+PR_EXISTS=$(gh pr view $PR_NUMBER --json number 2>/dev/null)
+if [ -z "$PR_EXISTS" ]; then
+    echo "Error: PR #$PR_NUMBER does not exist or you don't have access to it."
+    exit 1
+fi
+
+# Use gh api to get raw comments for the issue/PR
+echo "Fetching comments..."
+
+# Get the PR description/body itself
+PR_BODY=$(gh api repos/$OWNER/$REPO/pulls/$PR_NUMBER --jq 'select(.body != null and .body != "") | "PR_BODY|\(.number)|\(.user.login): \(.body)"' 2>/dev/null || echo "")
+
+# Get issue comments (general PR comments)
+ISSUE_COMMENTS=$(gh api repos/$OWNER/$REPO/issues/$PR_NUMBER/comments --jq '.[] | "ISSUE|\(.id)|\(.user.login): \(.body)"' 2>/dev/null || echo "")
+
+# Get review comments (inline code review comments)
+REVIEW_COMMENTS=$(gh api repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments --jq '.[] | "REVIEW|\(.id)|\(.user.login): \(.body)"' 2>/dev/null || echo "")
+
+# Get review summary comments (comments submitted with reviews)
+REVIEW_SUMMARY_COMMENTS=$(gh api repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews --jq '.[] | select(.body != null and .body != "") | "REVIEW_SUMMARY|\(.id)|\(.user.login): \(.body)"' 2>/dev/null || echo "")
+
+# Combine all comments
+ALL_COMMENTS=""
+if [ ! -z "$PR_BODY" ]; then
+    ALL_COMMENTS="$ALL_COMMENTS$PR_BODY"
+fi
+if [ ! -z "$ISSUE_COMMENTS" ]; then
+    if [ ! -z "$ALL_COMMENTS" ]; then
+        ALL_COMMENTS="$ALL_COMMENTS
+"
+    fi
+    ALL_COMMENTS="$ALL_COMMENTS$ISSUE_COMMENTS"
+fi
+if [ ! -z "$REVIEW_COMMENTS" ]; then
+    if [ ! -z "$ALL_COMMENTS" ]; then
+        ALL_COMMENTS="$ALL_COMMENTS
+"
+    fi
+    ALL_COMMENTS="$ALL_COMMENTS$REVIEW_COMMENTS"
+fi
+if [ ! -z "$REVIEW_SUMMARY_COMMENTS" ]; then
+    if [ ! -z "$ALL_COMMENTS" ]; then
+        ALL_COMMENTS="$ALL_COMMENTS
+"
+    fi
+    ALL_COMMENTS="$ALL_COMMENTS$REVIEW_SUMMARY_COMMENTS"
+fi
+
+if [ -z "$ALL_COMMENTS" ]; then
+    echo "No comments found for PR #$PR_NUMBER"
+    exit 0
+fi
+
+echo "$ALL_COMMENTS"
 
 echo
 read -p "Enter comment ID to react to: " COMMENT_ID
 echo "Pick a reaction: (+1, -1, laugh, heart, hooray, rocket, eyes)"
 read -p "Reaction: " REACTION
 
-OWNER=$(gh repo view --json owner -q ".owner.login")
-REPO=$(gh repo view --json name -q ".name")
+# Determine if it's an issue comment or review comment
+COMMENT_TYPE=$(echo "$ALL_COMMENTS" | grep "|$COMMENT_ID|" | cut -d'|' -f1)
 
 echo "Sending reaction..."
-gh api --method POST /repos/$OWNER/$REPO/issues/comments/$COMMENT_ID/reactions \
-  -f "content=$REACTION" \
-  -H "Accept: application/vnd.github+json"
+if [ "$COMMENT_TYPE" = "PR_BODY" ]; then
+    # React to PR description/body
+    gh api --method POST repos/$OWNER/$REPO/issues/$PR_NUMBER/reactions \
+      -f "content=$REACTION" \
+      -H "Accept: application/vnd.github+json"
+elif [ "$COMMENT_TYPE" = "ISSUE" ]; then
+    # React to issue comment
+    gh api --method POST repos/$OWNER/$REPO/issues/comments/$COMMENT_ID/reactions \
+      -f "content=$REACTION" \
+      -H "Accept: application/vnd.github+json"
+elif [ "$COMMENT_TYPE" = "REVIEW" ]; then
+    # React to review comment (inline code comment)
+    gh api --method POST repos/$OWNER/$REPO/pulls/comments/$COMMENT_ID/reactions \
+      -f "content=$REACTION" \
+      -H "Accept: application/vnd.github+json"
+elif [ "$COMMENT_TYPE" = "REVIEW_SUMMARY" ]; then
+    # React to review summary comment
+    gh api --method POST repos/$OWNER/$REPO/pulls/reviews/$COMMENT_ID/reactions \
+      -f "content=$REACTION" \
+      -H "Accept: application/vnd.github+json"
+else
+    echo "Error: Could not determine comment type for ID $COMMENT_ID"
+    exit 1
+fi
 
 echo "Done! 👍"
